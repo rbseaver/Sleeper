@@ -1,5 +1,6 @@
 ﻿using cpaplib;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using StagPoint.EDF.Net;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -395,6 +396,116 @@ namespace cpaplib_tests
 
             Assert.ThrowsException<FileNotFoundException>(() => resMedDataLoader.HasCorrectFolderStructure(testFolder, true));
 
+        }
+
+        #endregion
+
+        #region Session import
+
+        [TestMethod]
+        public void LoadFromFolder_ImportsSessionsThatStartAfterMidnight()
+        {
+            // A night fragmented into several Sessions must be imported completely, including the
+            // ones that start after midnight (the ResMed "day" runs from noon to noon).
+            var testFolder = CreateTestCard(
+                new DateTime( 2026, 10, 3 ),
+                (  615,  690 ),   // 22:15 -> 23:30
+                (  705,  750 ),   // 23:45 -> 00:30
+                (  795, 1020 )    // 01:15 -> 05:00
+            );
+
+            try
+            {
+                var days = new ResMedDataLoader().LoadFromFolder( testFolder );
+
+                Assert.AreEqual( 1, days.Count );
+                Assert.AreEqual( 3, days[ 0 ].Sessions.Count );
+                Assert.IsTrue(
+                    days[ 0 ].Sessions.Any( x => x.StartTime == new DateTime( 2026, 10, 4, 1, 15, 0 ) ),
+                    "The Session starting at 01:15, after midnight, was not imported"
+                );
+            }
+            finally
+            {
+                Directory.Delete( testFolder, true );
+            }
+        }
+
+        /// <summary>
+        /// Creates a minimal SD card folder containing an STR.edf file that reports a single day
+        /// with the given MaskOn/MaskOff pairs (times are minutes since noon of the report date).
+        /// </summary>
+        private string CreateTestCard( DateTime reportDate, params (int MaskOn, int MaskOff)[] maskEvents )
+        {
+            const int MASK_SLOTS = 20; // Number of MaskOn/MaskOff slots per day in a real STR.edf file
+
+            var root = Path.Combine( Path.GetTempPath(), "cpaplib_tests", Guid.NewGuid().ToString( "N" ) );
+
+            Directory.CreateDirectory( Path.Combine( root, "DATALOG", reportDate.ToString( "yyyyMMdd" ) ) );
+
+            File.WriteAllText( Path.Combine( root, "Identification.json" ), """
+                {
+                  "FlowGenerator": {
+                    "IdentificationProfiles": {
+                      "Product": {
+                        "SerialNumber": "12345678901",
+                        "ProductCode": "39000",
+                        "ProductName": "AirSense 11 AutoSet"
+                      }
+                    }
+                  }
+                }
+                """ );
+
+            var data = GetSampleData_AS11();
+            data.Remove( "MaskOn" );
+            data.Remove( "MaskOff" );
+            data[ "Date" ]        = ( reportDate - new DateTime( 1970, 1, 1 ) ).TotalDays;
+            data[ "MaskEvents" ]  = maskEvents.Length;
+            data[ "Duration" ]    = 480;
+
+            var maskOn  = Enumerable.Repeat( -1.0, MASK_SLOTS ).ToArray();
+            var maskOff = Enumerable.Repeat( -1.0, MASK_SLOTS ).ToArray();
+
+            for( int i = 0; i < maskEvents.Length; i++ )
+            {
+                maskOn[ i ]  = maskEvents[ i ].MaskOn;
+                maskOff[ i ] = maskEvents[ i ].MaskOff;
+            }
+
+            var file = new EdfFile();
+
+            foreach( var pair in data )
+            {
+                file.Signals.Add( CreateSignal( pair.Key, "", 1, new[] { pair.Value } ) );
+            }
+
+            file.Signals.Add( CreateSignal( "MaskOn",  "MINUTES", MASK_SLOTS, maskOn ) );
+            file.Signals.Add( CreateSignal( "MaskOff", "MINUTES", MASK_SLOTS, maskOff ) );
+
+            file.Header.StartTime.Value            = reportDate.AddHours( 12 );
+            file.Header.NumberOfDataRecords.Value  = 1;
+            file.Header.DurationOfDataRecord.Value = 86400;
+
+            file.WriteTo( Path.Combine( root, "STR.edf" ) );
+
+            return root;
+        }
+
+        private static EdfStandardSignal CreateSignal( string label, string dimension, int samplesPerRecord, double[] samples )
+        {
+            var signal = new EdfStandardSignal();
+
+            signal.Label.Value                    = label;
+            signal.PhysicalDimension.Value        = dimension;
+            signal.NumberOfSamplesPerRecord.Value = samplesPerRecord;
+            signal.PhysicalMinimum.Value          = -32768;
+            signal.PhysicalMaximum.Value          = 32767;
+            signal.DigitalMinimum.Value           = -32768;
+            signal.DigitalMaximum.Value           = 32767;
+            signal.Samples.AddRange( samples );
+
+            return signal;
         }
 
         #endregion

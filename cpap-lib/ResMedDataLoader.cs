@@ -922,7 +922,7 @@ namespace cpaplib
                 Settings       = settings,
                 EventSummary   = ReadEventsSummary( data ),
                 StatsSummary   = ReadStatsSummary( data ),
-                MaskEvents     = (int)(data[ "MaskEvents" ] / 2),
+                MaskEvents     = (int)data[ "MaskEvents" ],
                 TotalSleepTime = TimeSpan.FromMinutes( data[ "Duration" ] ),
             };
 
